@@ -61,7 +61,17 @@ def get_parser():
     parser.add_argument('--ohem_hard_ratio', type=float, default=0.3,
                         help='OHEM: fraction of hardest pixels to keep')
     parser.add_argument('--ot_reg', type=float, default=0.1,
-                        help='Sinkhorn OT entropy regularization')
+                        help='Sinkhorn OT entropy regularization (gamma — FIXED)')
+    parser.add_argument('--ot_alpha', type=float, default=1.0,
+                        help='UOT image marginal relaxation (lower = more bg suppression)')
+    parser.add_argument('--ot_beta', type=float, default=1.0,
+                        help='UOT text marginal relaxation (lower = more text filtering)')
+    parser.add_argument('--learnable_margins', action='store_true', default=True,
+                        help='Make UOT alpha/beta trainable after warmup')
+    parser.add_argument('--no_learnable_margins', action='store_true', default=False,
+                        help='Keep UOT alpha/beta fixed throughout training')
+    parser.add_argument('--uot_warmup_epochs', type=int, default=5,
+                        help='Epochs to keep alpha/beta fixed before unfreezing')
     parser.add_argument('--ot_num_iter', type=int, default=10,
                         help='Number of Sinkhorn iterations')
     parser.add_argument('--num_ot_scales', type=int, default=3,
@@ -70,6 +80,40 @@ def get_parser():
                         help='Weight for boundary-aware loss component')
     parser.add_argument('--focal_gamma', type=float, default=2.0,
                         help='Focal loss gamma (higher = more focus on hard)')
+
+    # ====== Mask Refinement (NEW) ======
+    parser.add_argument('--use_mask_refinement', action='store_true', default=True,
+                        help='Enable mask refinement head for sharper boundaries')
+    parser.add_argument('--no_mask_refinement', action='store_true', default=False,
+                        help='Disable mask refinement head')
+
+    # ====== Orientation-Aware Conv / RDConv (NEW) ======
+    parser.add_argument('--use_rdconv', action='store_true', default=True,
+                        help='Enable rotated depthwise conv in mask refinement')
+    parser.add_argument('--no_rdconv', action='store_true', default=False,
+                        help='Disable RDConv (use standard conv)')
+    parser.add_argument('--num_orientations', type=int, default=8,
+                        help='Number of RDConv orientation branches')
+
+    # ====== Lovász Loss (NEW) ======
+    parser.add_argument('--use_lovasz_loss', action='store_true', default=True,
+                        help='Enable Lovász hinge loss for direct IoU optimization')
+    parser.add_argument('--no_lovasz_loss', action='store_true', default=False,
+                        help='Disable Lovász loss')
+    parser.add_argument('--lovasz_weight', type=float, default=1.0,
+                        help='Weight for Lovász loss component')
+
+    # ====== Data Augmentation (NEW) ======
+    parser.add_argument('--use_augmentation', action='store_true', default=True,
+                        help='Enable strong data augmentation (flip/rotate/scale/color)')
+    parser.add_argument('--no_augmentation', action='store_true', default=False,
+                        help='Disable data augmentation')
+
+    # ====== Test-Time Augmentation (NEW) ======
+    parser.add_argument('--use_tta', action='store_true', default=True,
+                        help='Enable test-time augmentation (flip averaging)')
+    parser.add_argument('--no_tta', action='store_true', default=False,
+                        help='Disable TTA')
 
     # ====== Training ======
     parser.add_argument('--epochs', type=int, default=40,
@@ -137,5 +181,17 @@ def get_args():
         args.use_multiscale_ot = False
     if args.no_ohem_loss:
         args.use_ohem_loss = False
+    if args.no_mask_refinement:
+        args.use_mask_refinement = False
+    if args.no_rdconv:
+        args.use_rdconv = False
+    if args.no_lovasz_loss:
+        args.use_lovasz_loss = False
+    if args.no_augmentation:
+        args.use_augmentation = False
+    if args.no_tta:
+        args.use_tta = False
+    if args.no_learnable_margins:
+        args.learnable_margins = False
 
     return args

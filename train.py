@@ -39,6 +39,52 @@ except ImportError:
     HAS_WANDB = False
 
 
+# ============================================================
+# Test-Time Augmentation (TTA)
+# ============================================================
+@torch.no_grad()
+def tta_predict(model, images, captions, masks_gt=None):
+    """
+    Test-Time Augmentation: average predictions over flipped inputs.
+
+    Averages logits from original, horizontally-flipped, and vertically-flipped
+    images to produce more robust predictions. Free improvement, no retraining.
+
+    Args:
+        model: Enhanced_RRSIS_UOT model in eval mode.
+        images: (B, 3, H, W) input images.
+        captions: List[str] of length B.
+        masks_gt: optional GT masks for loss computation.
+
+    Returns:
+        dict with 'pred_masks' (averaged logits) and optionally 'loss'.
+    """
+    preds = []
+
+    # Original
+    with torch.cuda.amp.autocast(enabled=True):
+        out_orig = model(images, captions, masks_gt)
+    preds.append(out_orig['pred_masks'])
+
+    # Horizontal flip
+    with torch.cuda.amp.autocast(enabled=True):
+        out_hflip = model(torch.flip(images, [-1]), captions)
+    preds.append(torch.flip(out_hflip['pred_masks'], [-1]))
+
+    # Vertical flip
+    with torch.cuda.amp.autocast(enabled=True):
+        out_vflip = model(torch.flip(images, [-2]), captions)
+    preds.append(torch.flip(out_vflip['pred_masks'], [-2]))
+
+    # Average logits
+    avg_mask = torch.stack(preds).mean(dim=0)
+
+    result = {'pred_masks': avg_mask}
+    if 'loss' in out_orig:
+        result['loss'] = out_orig['loss']
+    return result
+
+
 def set_seed(seed):
     """Set random seeds for reproducibility."""
     random.seed(seed)
@@ -98,7 +144,8 @@ def get_optimizer(model, args):
             continue
         if 'lora' in name.lower() or 'dynamic_lora' in name.lower() or 'hyper_' in name.lower():
             lora_params.append(param)
-        elif any(x in name for x in ['ms_ot_aligner', 'contrastive_loss', 'enhanced_loss', 'ot_aligner']):
+        elif any(x in name for x in ['ms_ot_aligner', 'contrastive_loss', 'enhanced_loss',
+                                      'ot_aligner', 'mask_refine_head', 'orient']):
             enhancement_params.append(param)
         elif any(x in name for x in ['transformer', 'segmentation_head', 'geometry_encoder', 'dot_prod']):
             decoder_params.append(param)
@@ -138,7 +185,7 @@ def get_scheduler(optimizer, args, steps_per_epoch):
 
 
 @torch.no_grad()
-def validate(model, val_loader, device, epoch):
+def validate(model, val_loader, device, epoch, use_tta=False):
     """Run validation and compute metrics."""
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -161,8 +208,12 @@ def validate(model, val_loader, device, epoch):
         if isinstance(captions[0], list):
             captions = [cap[0] for cap in captions]
 
-        with torch.cuda.amp.autocast(enabled=True):
-            outputs = model(images, captions, masks)
+        # Use TTA if enabled
+        if use_tta:
+            outputs = tta_predict(model, images, captions, masks)
+        else:
+            with torch.cuda.amp.autocast(enabled=True):
+                outputs = model(images, captions, masks)
 
         loss = outputs['loss'].item()
         total_loss += loss
@@ -264,7 +315,13 @@ def main():
     print(f"  Dynamic LoRA: {args.use_dynamic_lora}")
     print(f"  Contrastive Loss: {args.use_contrastive_loss} (weight={args.contrastive_weight})")
     print(f"  Multi-Scale OT: {args.use_multiscale_ot} ({args.num_ot_scales} scales)")
+    print(f"  UOT Alpha: {args.ot_alpha}, Beta: {args.ot_beta}, Gamma(reg): {args.ot_reg}")
+    print(f"  UOT Learnable Margins: {args.learnable_margins} (warmup={args.uot_warmup_epochs} epochs)")
     print(f"  OHEM Loss: {args.use_ohem_loss} (hard_ratio={args.ohem_hard_ratio})")
+    print(f"  Mask Refinement: {args.use_mask_refinement} (RDConv={args.use_rdconv})")
+    print(f"  Lovász Loss: {getattr(args, 'use_lovasz_loss', True)}")
+    print(f"  Data Augmentation: {getattr(args, 'use_augmentation', True)}")
+    print(f"  TTA: {getattr(args, 'use_tta', True)}")
     print(f"{'='*60}\n")
 
     # ====== Build Enhanced Model ======
@@ -282,12 +339,22 @@ def main():
         use_contrastive_loss=args.use_contrastive_loss,
         use_multiscale_ot=args.use_multiscale_ot,
         use_ohem_loss=args.use_ohem_loss,
+        # NEW enhancement flags
+        use_mask_refinement=args.use_mask_refinement,
+        use_rdconv=args.use_rdconv,
+        use_lovasz_loss=args.use_lovasz_loss,
         # Enhancement params
         contrastive_weight=args.contrastive_weight,
         ohem_hard_ratio=args.ohem_hard_ratio,
         ot_reg=args.ot_reg,
+        ot_alpha=args.ot_alpha,
+        ot_beta=args.ot_beta,
         ot_num_iter=args.ot_num_iter,
         num_ot_scales=args.num_ot_scales,
+        learnable_margins=args.learnable_margins,
+        uot_warmup_epochs=args.uot_warmup_epochs,
+        num_orientations=getattr(args, 'num_orientations', 8),
+        lovasz_weight=getattr(args, 'lovasz_weight', 1.0),
     )
     model = model.to(device)
 
@@ -348,27 +415,44 @@ def main():
     for epoch in range(start_epoch, args.epochs):
         print(f"\n--- Epoch {epoch+1}/{args.epochs} ---")
 
+        # Update UOT warmup state (unfreeze alpha/beta after warmup)
+        model.set_epoch(epoch)
+
+        # Log current UOT alpha/beta values
+        uot_info = model.get_uot_info()
+        if uot_info:
+            uot_str = ', '.join(f'{k}={v:.4f}' for k, v in uot_info.items())
+            print(f"  [UOT] {uot_str}")
+
         # Train
         train_loss, train_iou = train_one_epoch(
             model, train_loader, optimizer, scheduler, scaler, device, epoch + 1, args
         )
 
         # Validate
-        val_iou, val_overall_iou = validate(model, val_loader, device, epoch + 1)
+        val_iou, val_overall_iou = validate(
+            model, val_loader, device, epoch + 1,
+            use_tta=getattr(args, 'use_tta', False),
+        )
         
         print('Average object IoU {}'.format(val_iou))
         print('Overall IoU {}'.format(val_overall_iou))
 
         # Wandb logging
         if HAS_WANDB:
-            wandb.log({
+            log_dict = {
                 'epoch': epoch + 1,
                 'train_loss': train_loss,
                 'train_iou': train_iou,
                 'val_iou': val_iou,
                 'val_overall_iou': val_overall_iou,
                 'lr': optimizer.param_groups[0]['lr'],
-            })
+            }
+            # Log UOT alpha/beta values
+            uot_info = model.get_uot_info()
+            if uot_info:
+                log_dict.update({f'uot/{k}': v for k, v in uot_info.items()})
+            wandb.log(log_dict)
 
         # Save best model
         is_best = (val_iou + val_overall_iou) > best_iou

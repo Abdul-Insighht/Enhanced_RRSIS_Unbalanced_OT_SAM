@@ -25,6 +25,81 @@ from refer.refer import REFER
 
 
 # ============================================================
+# Shared Data Augmentation for Training
+# ============================================================
+def apply_train_augmentation(img_pil, mask_np, image_size):
+    """
+    Apply strong training augmentations jointly to image and mask.
+
+    Geometric transforms (flip, rotate, scale) apply to BOTH image and mask.
+    Color transforms apply ONLY to image.
+
+    Args:
+        img_pil: PIL Image (RGB).
+        mask_np: numpy array (H, W) binary mask (0 or 1).
+        image_size: target output size.
+
+    Returns:
+        img_tensor: (3, image_size, image_size) float tensor.
+        mask_tensor: (1, image_size, image_size) float tensor.
+    """
+    # Convert mask to PIL for consistent geometric transforms
+    mask_pil = Image.fromarray((mask_np * 255).astype(np.uint8), mode='L')
+
+    # === 1. Random Horizontal Flip (50%) ===
+    if random.random() > 0.5:
+        img_pil = TF.hflip(img_pil)
+        mask_pil = TF.hflip(mask_pil)
+
+    # === 2. Random Vertical Flip (50%) — critical for RS (no "up") ===
+    if random.random() > 0.5:
+        img_pil = TF.vflip(img_pil)
+        mask_pil = TF.vflip(mask_pil)
+
+    # === 3. Random 90° Rotation (0°, 90°, 180°, 270°) ===
+    #     Uses exact rotation — no interpolation artifacts in mask
+    angle = random.choice([0, 90, 180, 270])
+    if angle > 0:
+        img_pil = TF.rotate(img_pil, angle, expand=False, fill=0)
+        mask_pil = TF.rotate(mask_pil, angle, expand=False, fill=0)
+
+    # === 4. Random Scale Jitter (0.8× to 1.25×) ===
+    scale = random.uniform(0.8, 1.25)
+    new_size = int(image_size * scale)
+    img_pil = TF.resize(img_pil, [new_size, new_size])
+    mask_pil = TF.resize(mask_pil, [new_size, new_size],
+                         interpolation=TF.InterpolationMode.NEAREST)
+
+    if new_size > image_size:
+        # Random crop to target size
+        i = random.randint(0, new_size - image_size)
+        j = random.randint(0, new_size - image_size)
+        img_pil = TF.crop(img_pil, i, j, image_size, image_size)
+        mask_pil = TF.crop(mask_pil, i, j, image_size, image_size)
+    elif new_size < image_size:
+        # Resize up to target size
+        img_pil = TF.resize(img_pil, [image_size, image_size])
+        mask_pil = TF.resize(mask_pil, [image_size, image_size],
+                             interpolation=TF.InterpolationMode.NEAREST)
+    # else: already at target size
+
+    # === 5. Color Jitter (image ONLY — NOT mask) ===
+    color_jitter = transforms.ColorJitter(
+        brightness=0.3, contrast=0.3, saturation=0.2, hue=0.05
+    )
+    img_pil = color_jitter(img_pil)
+
+    # === Convert to tensors ===
+    img_tensor = TF.to_tensor(img_pil)
+    mask_array = np.array(mask_pil)
+    mask_tensor = torch.from_numpy(
+        (mask_array > 127).astype(np.uint8)
+    ).unsqueeze(0).float()
+
+    return img_tensor, mask_tensor
+
+
+# ============================================================
 # RRSIS-D Dataset (uses REFER API)
 # ============================================================
 class RRSISDDataset(data.Dataset):
@@ -39,6 +114,7 @@ class RRSISDDataset(data.Dataset):
         self.split = split
         self.eval_mode = eval_mode
         self.image_size = args.image_size
+        self.use_augmentation = getattr(args, 'use_augmentation', True) and (split == 'train')
 
         # Load REFER annotations
         self.refer = REFER(args.data_root, 'rrsis_d', args.splitBy)
@@ -56,7 +132,7 @@ class RRSISDDataset(data.Dataset):
             caption_for_ref = [el['raw'] for el in ref['sentences']]
             self.captions.append(caption_for_ref)
 
-        # Image transforms
+        # Image transforms (used when augmentation is OFF)
         self.img_transform = transforms.Compose([
             transforms.Resize((self.image_size, self.image_size)),
             transforms.ToTensor(),
@@ -92,11 +168,14 @@ class RRSISDDataset(data.Dataset):
         annot = np.zeros(ref_mask.shape, dtype=np.uint8)
         annot[ref_mask == 1] = 1
 
-        # Resize image and mask
-        img = self.img_transform(img)
-        mask = torch.from_numpy(annot).unsqueeze(0).float()
-        mask = TF.resize(mask, [self.image_size, self.image_size],
-                         interpolation=TF.InterpolationMode.NEAREST)
+        # Apply augmentation OR standard transform
+        if self.use_augmentation and not self.eval_mode:
+            img, mask = apply_train_augmentation(img, annot, self.image_size)
+        else:
+            img = self.img_transform(img)
+            mask = torch.from_numpy(annot).unsqueeze(0).float()
+            mask = TF.resize(mask, [self.image_size, self.image_size],
+                             interpolation=TF.InterpolationMode.NEAREST)
 
         # Select caption
         if self.eval_mode:
@@ -134,6 +213,7 @@ class RRSISHRDataset(data.Dataset):
         self.split = split
         self.eval_mode = eval_mode
         self.image_size = args.image_size
+        self.use_augmentation = getattr(args, 'use_augmentation', True) and (split == 'train')
 
         # Load REFER annotations
         self.refer = REFER(args.data_root, 'rrsis_hr', args.splitBy)
@@ -151,7 +231,7 @@ class RRSISHRDataset(data.Dataset):
             caption_for_ref = [el['raw'] for el in ref['sentences']]
             self.captions.append(caption_for_ref)
 
-        # Image transforms
+        # Image transforms (used when augmentation is OFF)
         self.img_transform = transforms.Compose([
             transforms.Resize((self.image_size, self.image_size)),
             transforms.ToTensor(),
@@ -176,11 +256,14 @@ class RRSISHRDataset(data.Dataset):
         annot = np.zeros(ref_mask.shape, dtype=np.uint8)
         annot[ref_mask == 1] = 1
 
-        # Resize
-        img = self.img_transform(img)
-        mask = torch.from_numpy(annot).unsqueeze(0).float()
-        mask = TF.resize(mask, [self.image_size, self.image_size],
-                         interpolation=TF.InterpolationMode.NEAREST)
+        # Apply augmentation OR standard transform
+        if self.use_augmentation and not self.eval_mode:
+            img, mask = apply_train_augmentation(img, annot, self.image_size)
+        else:
+            img = self.img_transform(img)
+            mask = torch.from_numpy(annot).unsqueeze(0).float()
+            mask = TF.resize(mask, [self.image_size, self.image_size],
+                             interpolation=TF.InterpolationMode.NEAREST)
 
         # Select caption
         if self.eval_mode:
@@ -206,6 +289,7 @@ class RefSegRSDataset(data.Dataset):
         self.split = split
         self.eval_mode = eval_mode
         self.image_size = args.image_size
+        self.use_augmentation = getattr(args, 'use_augmentation', True) and (split == 'train')
         self.data_root = data_root or os.path.join(args.data_root, 'RefSegRS')
 
         # Load data from text files
@@ -216,7 +300,7 @@ class RefSegRSDataset(data.Dataset):
         for sent in self.sentences:
             self.captions.append([sent.strip()])
 
-        # Image transforms
+        # Image transforms (used when augmentation is OFF)
         self.img_transform = transforms.Compose([
             transforms.Resize((self.image_size, self.image_size)),
             transforms.ToTensor(),
@@ -262,11 +346,14 @@ class RefSegRSDataset(data.Dataset):
         annot = np.zeros(ref_mask.shape, dtype=np.uint8)
         annot[ref_mask == 1] = 1
 
-        # Resize
-        img = self.img_transform(img)
-        mask = torch.from_numpy(annot).unsqueeze(0).float()
-        mask = TF.resize(mask, [self.image_size, self.image_size],
-                         interpolation=TF.InterpolationMode.NEAREST)
+        # Apply augmentation OR standard transform
+        if self.use_augmentation and not self.eval_mode:
+            img, mask = apply_train_augmentation(img, annot, self.image_size)
+        else:
+            img = self.img_transform(img)
+            mask = torch.from_numpy(annot).unsqueeze(0).float()
+            mask = TF.resize(mask, [self.image_size, self.image_size],
+                             interpolation=TF.InterpolationMode.NEAREST)
 
         # Select caption
         if self.eval_mode:

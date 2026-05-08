@@ -238,6 +238,80 @@ class BoundaryAwareLoss(nn.Module):
         return weighted_loss.mean()
 
 
+class LovaszHingeLoss(nn.Module):
+    """
+    Lovász-Softmax loss for direct IoU optimization.
+
+    The Lovász extension provides the tightest convex surrogate of the
+    IoU (Jaccard) loss, enabling direct optimization of IoU during
+    training. This is critical for pushing masks from IoU~0.78 above
+    the Pr@0.8 threshold.
+
+    Reference:
+        Berman et al., "The Lovász-Softmax loss: A tractable surrogate
+        for the optimization of the intersection-over-union measure in
+        neural networks", CVPR 2018.
+    """
+
+    def __init__(self):
+        super().__init__()
+
+    @staticmethod
+    def _lovasz_grad(gt_sorted):
+        """Compute gradient of the Lovász extension w.r.t sorted errors."""
+        p = len(gt_sorted)
+        gts = gt_sorted.sum()
+        intersection = gts - gt_sorted.float().cumsum(0)
+        union = gts + (1 - gt_sorted).float().cumsum(0)
+        jaccard = 1.0 - intersection / (union + 1e-6)
+        if p > 1:
+            jaccard[1:p] = jaccard[1:p] - jaccard[0:-1]
+        return jaccard
+
+    def _lovasz_hinge_flat(self, logits, labels):
+        """
+        Binary Lovász hinge loss.
+
+        Args:
+            logits: (P,) flattened predicted logits.
+            labels: (P,) flattened ground truth {0, 1}.
+        """
+        if len(labels) == 0:
+            return logits.sum() * 0.0
+        signs = 2.0 * labels.float() - 1.0
+        errors = 1.0 - logits * signs
+        errors_sorted, perm = torch.sort(errors, dim=0, descending=True)
+        perm = perm.data
+        gt_sorted = labels[perm]
+        grad = self._lovasz_grad(gt_sorted)
+        loss = torch.dot(F.relu(errors_sorted), grad)
+        return loss
+
+    def forward(self, pred_logits, gt_masks):
+        """
+        Compute Lovász hinge loss per sample and average.
+
+        Args:
+            pred_logits: (B, 1, H, W) predicted mask logits.
+            gt_masks: (B, 1, H, W) ground truth binary masks.
+
+        Returns:
+            lovasz_loss: scalar tensor.
+        """
+        if pred_logits.shape[-2:] != gt_masks.shape[-2:]:
+            gt_masks = F.interpolate(
+                gt_masks.float(), pred_logits.shape[-2:], mode='nearest'
+            )
+
+        B = pred_logits.shape[0]
+        loss = 0.0
+        for i in range(B):
+            logits_flat = pred_logits[i].view(-1)
+            labels_flat = gt_masks[i].view(-1)
+            loss += self._lovasz_hinge_flat(logits_flat, labels_flat)
+        return loss / B
+
+
 class EnhancedOHEMLoss(nn.Module):
     """
     Combined loss with all three OHEM components.
@@ -262,22 +336,30 @@ class EnhancedOHEMLoss(nn.Module):
         hard_ratio=0.3,
         focal_gamma=2.0,
         score_weight=1.0,
+        use_lovasz=True,
+        lovasz_weight=1.0,
     ):
         super().__init__()
         self.ohem_weight = ohem_weight
         self.focal_dice_weight = focal_dice_weight
         self.boundary_weight = boundary_weight
         self.score_weight = score_weight
+        self.use_lovasz = use_lovasz
+        self.lovasz_weight = lovasz_weight
 
         self.ohem_loss = OHEMLoss(hard_ratio=hard_ratio)
         self.focal_dice_loss = FocalDiceLoss(gamma=focal_gamma)
         self.boundary_loss = BoundaryAwareLoss()
 
-        print("[EnhancedOHEM] OHEM + FocalDice + Boundary loss initialized")
+        if use_lovasz:
+            self.lovasz_loss = LovaszHingeLoss()
+            print("[EnhancedOHEM] OHEM + FocalDice + Boundary + Lovász loss initialized")
+        else:
+            print("[EnhancedOHEM] OHEM + FocalDice + Boundary loss initialized")
 
     def forward(self, outputs, gt_masks, image_size):
         """
-        Compute combined OHEM + FocalDice + Boundary loss.
+        Compute combined OHEM + FocalDice + Boundary + Lovász loss.
 
         Args:
             outputs: dict with 'pred_masks' and optionally 'pred_logits'.
@@ -298,7 +380,12 @@ class EnhancedOHEMLoss(nn.Module):
         # 3. Boundary-aware loss (sharp boundaries)
         boundary = self.boundary_loss(pred_masks, gt_masks)
 
-        # 4. Score supervision (optional)
+        # 4. Lovász hinge loss (direct IoU optimization) [NEW]
+        lovasz = torch.tensor(0.0, device=gt_masks.device)
+        if self.use_lovasz and hasattr(self, 'lovasz_loss'):
+            lovasz = self.lovasz_loss(pred_masks, gt_masks)
+
+        # 5. Score supervision (optional)
         score_loss = torch.tensor(0.0, device=gt_masks.device)
         if 'pred_logits' in outputs and outputs['pred_logits'] is not None:
             score_loss = self._compute_score_loss(outputs['pred_logits'], gt_masks)
@@ -307,6 +394,7 @@ class EnhancedOHEMLoss(nn.Module):
             self.ohem_weight * ohem +
             self.focal_dice_weight * focal_dice +
             self.boundary_weight * boundary +
+            self.lovasz_weight * lovasz +
             self.score_weight * score_loss
         )
 

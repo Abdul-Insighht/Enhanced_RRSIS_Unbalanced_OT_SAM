@@ -22,6 +22,32 @@ from data.dataset import get_dataset, collate_fn
 from lib.enhanced_model import Enhanced_RRSIS_UOT
 
 
+@torch.no_grad()
+def tta_predict(model, images, captions, masks_gt=None):
+    """
+    Test-Time Augmentation: average predictions over flipped inputs.
+    """
+    preds = []
+
+    with torch.cuda.amp.autocast(enabled=True):
+        out_orig = model(images, captions, masks_gt)
+    preds.append(out_orig['pred_masks'])
+
+    with torch.cuda.amp.autocast(enabled=True):
+        out_hflip = model(torch.flip(images, [-1]), captions)
+    preds.append(torch.flip(out_hflip['pred_masks'], [-1]))
+
+    with torch.cuda.amp.autocast(enabled=True):
+        out_vflip = model(torch.flip(images, [-2]), captions)
+    preds.append(torch.flip(out_vflip['pred_masks'], [-2]))
+
+    avg_mask = torch.stack(preds).mean(dim=0)
+    result = {'pred_masks': avg_mask}
+    if 'loss' in out_orig:
+        result['loss'] = out_orig['loss']
+    return result
+
+
 def compute_metrics(pred_masks, gt_masks, threshold=0.5):
     """
     Compute segmentation metrics.
@@ -63,6 +89,7 @@ def compute_metrics(pred_masks, gt_masks, threshold=0.5):
 def evaluate(model, test_loader, device, args):
     """Run full evaluation."""
     model.eval()
+    use_tta = getattr(args, 'use_tta', False)
 
     all_ious = []
     total_intersection = 0
@@ -83,8 +110,11 @@ def evaluate(model, test_loader, device, args):
                 ious_for_caps = []
                 for cap in cap_list:
                     start = time.time()
-                    with torch.cuda.amp.autocast(enabled=True):
-                        outputs = model(images[0:1], [cap], masks[0:1])
+                    if use_tta:
+                        outputs = tta_predict(model, images[0:1], [cap], masks[0:1])
+                    else:
+                        with torch.cuda.amp.autocast(enabled=True):
+                            outputs = model(images[0:1], [cap], masks[0:1])
                     total_time += time.time() - start
 
                     metrics = compute_metrics(outputs['pred_masks'], masks[0:1])
@@ -101,8 +131,11 @@ def evaluate(model, test_loader, device, args):
         else:
             # Single caption per sample
             start = time.time()
-            with torch.cuda.amp.autocast(enabled=True):
-                outputs = model(images, captions, masks)
+            if use_tta:
+                outputs = tta_predict(model, images, captions, masks)
+            else:
+                with torch.cuda.amp.autocast(enabled=True):
+                    outputs = model(images, captions, masks)
             total_time += time.time() - start
 
             metrics = compute_metrics(outputs['pred_masks'], masks)
@@ -195,6 +228,19 @@ def main():
         use_contrastive_loss=args.use_contrastive_loss,
         use_multiscale_ot=args.use_multiscale_ot,
         use_ohem_loss=args.use_ohem_loss,
+        use_mask_refinement=getattr(args, 'use_mask_refinement', True),
+        use_rdconv=getattr(args, 'use_rdconv', True),
+        use_lovasz_loss=getattr(args, 'use_lovasz_loss', True),
+        # UOT parameters
+        ot_reg=args.ot_reg,
+        ot_alpha=args.ot_alpha,
+        ot_beta=args.ot_beta,
+        ot_num_iter=args.ot_num_iter,
+        num_ot_scales=args.num_ot_scales,
+        learnable_margins=args.learnable_margins,
+        uot_warmup_epochs=args.uot_warmup_epochs,
+        num_orientations=getattr(args, 'num_orientations', 8),
+        lovasz_weight=getattr(args, 'lovasz_weight', 1.0),
     )
 
     # Load trained weights

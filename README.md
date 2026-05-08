@@ -1,130 +1,142 @@
-# Enhanced_RRSIS_UOT: Enhanced Referring Remote Sensing Image Segmentation with Unbalanced Optimal Transport
+# Enhanced_RRSIS_UOT_SAM
 
-**Enhanced_RRSIS_UOT** extends [RRSIS_SAM3](../RRSIS_SAM3/) with **4 novel techniques** for improved performance on referring remote sensing image segmentation.
+**Enhanced Referring Remote Sensing Image Segmentation with Unbalanced Optimal Transport (UOT)**
 
-## What's New (Over RRSIS_SAM3)
+This repository provides a state-of-the-art solution for Referring Remote Sensing Image Segmentation (RRSIS). It extends the baseline SAM3 architecture with **7 novel enhancements** specifically designed to tackle remote sensing challenges such as extreme foreground-background imbalance, small object detection, arbitrary orientations, and blurry boundaries.
+
+---
+
+## ✨ Key Features & Enhancements
 
 | Enhancement | Module | Description |
 |-------------|--------|-------------|
-| 🟢 **Text-Guided Dynamic LoRA** | `lib/dynamic_lora.py` | Text-conditioned vision adapter weights — vision encoder adapts per-caption |
-| 🟢 **Contrastive Loss (InfoNCE)** | `lib/contrastive_loss.py` | Auxiliary loss aligning masked visual features with text features |
-| 🟢 **Multi-Scale OT Alignment** | `lib/multiscale_ot_alignment.py` | Scale-aware OT alignment across all FPN levels with gated residual |
-| 🟢 **OHEM + Focal + Boundary Loss** | `lib/ohem_loss.py` | Hard pixel mining + focal weighting + boundary supervision |
+| 🟢 **Text-Guided Dynamic LoRA** | `lib/dynamic_lora.py` | Vision encoder adapts weights dynamically per-caption using a HyperNetwork. |
+| 🟢 **Multi-Scale UOT Alignment** | `lib/multiscale_ot_alignment.py` | Unbalanced Optimal Transport (Sinkhorn) across 3 FPN levels. Suppresses 95%+ background via learnable Alpha/Beta relaxation margins. |
+| 🟢 **Mask Refinement Head** | `lib/mask_refinement.py` | Progressive mask refinement using high-res FPN skip connections. |
+| 🟢 **Orientation-Aware Conv (RDConv)** | `lib/orientation_conv.py` | 8-branch depthwise convolution to handle arbitrary object rotations in satellite imagery. |
+| 🟢 **OHEM + Focal + Boundary Loss** | `lib/ohem_loss.py` | Online Hard Example Mining (top 30%), Focal weighting, and Sobel edge boundary supervision. |
+| 🟢 **Lovász Hinge Loss** | `lib/ohem_loss.py` | Direct optimization of the Jaccard index (IoU) surrogate. |
+| 🟢 **Contrastive Loss (InfoNCE)** | `lib/contrastive_loss.py` | Auxiliary loss aligning masked visual features tightly with text features. |
 
-## Architecture
+---
 
-```
-Image (504×504) + Text Caption
-    │
-    ├── SAM3 VL Backbone (ViT + Text Encoder, frozen)
-    │       + Text-Guided Dynamic LoRA (text-conditioned adapters) ← NEW
-    │
-    ├── Multi-Scale OT Alignment (per-FPN-level Sinkhorn matching) ← ENHANCED
-    │
-    ├── Transformer Encoder (text-image fusion, fine-tuned)
-    │
-    ├── DETR Decoder (object detection, fine-tuned)
-    │
-    ├── Segmentation Head (mask prediction, fine-tuned)
-    │
-    └── Loss Computation:
-            OHEM + FocalDice + Boundary Loss ← ENHANCED
-            + Contrastive InfoNCE Loss (auxiliary) ← NEW
-```
+## 💻 Environment Setup (Local GPU System)
 
-## Key Differences from RRSIS_SAM3
+This project requires a dedicated GPU system with NVIDIA CUDA support (Linux or Windows). 
 
-| Feature | RRSIS_SAM3 | Enhanced_RRSIS_UOT |
-|---------|------------|---------------------|
-| LoRA Type | Static (same weights for all inputs) | **Dynamic** (text-conditioned per-caption) |
-| OT Alignment | Single-scale, one pass | **Multi-scale** across all FPN levels |
-| Loss Function | Dice + BCE | **OHEM + FocalDice + Boundary + Contrastive** |
-| Vision-Language Bond | Fusion encoder only | **Early alignment** (LoRA) + **mid alignment** (OT) + **late alignment** (Contrastive) |
-
-## Supported Datasets
-
-| Dataset | Train | Val | Test | Image Size | Categories |
-|---------|-------|-----|------|------------|------------|
-| **RRSIS-D** | 12,181 | 1,740 | 3,481 | 800×800 | 20 |
-| **RRSIS-HR** | 2,118 | 268 | 264 | 1024×1024 | 7 |
-| **RefSegRS** | 2,172 | 413 | 1,817 | 512×512 | — |
-
-## Training
-
-### Full Enhanced Model (All 4 Techniques)
+**1. Create a Conda Environment:**
 ```bash
-bash fine.sh rrsis_d ./data
+conda create -n rrsis_uot python=3.10 -y
+conda activate rrsis_uot
 ```
 
-### Ablation Studies
+**2. Install PyTorch:**
+Install PyTorch compatible with your CUDA version (e.g., CUDA 12.1).
 ```bash
-# Baseline (equivalent to RRSIS_SAM3):
-bash fine.sh rrsis_d ./data --no_dynamic_lora --no_contrastive_loss --no_multiscale_ot --no_ohem_loss
-
-# Only Dynamic LoRA:
-bash fine.sh rrsis_d ./data --no_contrastive_loss --no_multiscale_ot --no_ohem_loss
-
-# Only OHEM Loss:
-bash fine.sh rrsis_d ./data --no_dynamic_lora --no_contrastive_loss --no_multiscale_ot
-
-# Dynamic LoRA + OHEM (best combo):
-bash fine.sh rrsis_d ./data --no_contrastive_loss --no_multiscale_ot
+conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
 ```
 
-### Key Training Arguments
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--use_dynamic_lora` | True | Enable text-guided dynamic LoRA |
-| `--use_contrastive_loss` | True | Enable InfoNCE contrastive loss |
-| `--use_multiscale_ot` | True | Enable multi-scale OT alignment |
-| `--use_ohem_loss` | True | Enable OHEM + Focal + Boundary loss |
-| `--contrastive_weight` | 0.1 | Weight for contrastive loss |
-| `--ohem_hard_ratio` | 0.3 | Fraction of hard pixels for OHEM |
-| `--num_ot_scales` | 3 | Number of FPN scales for OT |
-| `--focal_gamma` | 2.0 | Focal loss focusing parameter |
+**3. Install Dependencies:**
+```bash
+pip install -r requirements.txt
+pip install opencv-python pillow numpy wandb scipy
+```
 
-## Evaluation
+**4. Download Pre-trained SAM3 Weights:**
+Create a directory for weights and place the SAM3 checkpoint there.
+```bash
+mkdir -p pre-trained-weights
+# Ensure your SAM3 weights (e.g., sam3.pt) are inside this folder
+```
+
+---
+
+## 📂 Dataset Preparation
+
+The model supports 3 major benchmarks. Structure your `data/` folder as follows:
+
+```
+data/
+├── rrsis_d/
+│   ├── images/              # 800x800 Remote Sensing Images
+│   └── annotations/         # REFER API format JSONs
+├── rrsis_hr/
+│   ├── images/              # 1024x1024 High-Res Images
+│   └── annotations/
+└── RefSegRS/
+    ├── images/              # 512x512 Images
+    ├── masks/               # Ground Truth binary masks
+    ├── output_phrase_train.txt
+    ├── output_phrase_val.txt
+    └── output_phrase_test.txt
+```
+
+---
+
+## 🚀 Training
+
+### Full Enhanced Model (Recommended)
+Train the model with all 7 techniques enabled, including the Unbalanced OT with a 5-epoch warmup.
 
 ```bash
-python test.py --dataset rrsis_d --split test --resume ./output/rrsis_d_enhanced_uot/best_model.pth
+python train.py \
+    --dataset rrsis_d \
+    --data_root ./data \
+    --output_dir ./output/rrsis_d_enhanced \
+    --sam3_ckpt ./pre-trained-weights/sam3.pt \
+    --batch_size 2 \
+    --grad_accum_steps 4 \
+    --epochs 40 \
+    --use_dynamic_lora \
+    --use_multiscale_ot \
+    --learnable_margins \
+    --uot_warmup_epochs 5
 ```
 
-### Output Metrics
+### Unbalanced OT (UOT) Hyperparameter Control
+The repository uses Unbalanced Sinkhorn to ignore irrelevant background and padding.
+- `--ot_alpha`: Image margin relaxation (Default: 1.0)
+- `--ot_beta`: Text margin relaxation (Default: 1.0)
+- `--learnable_margins`: Unfreezes Alpha/Beta after the warmup epochs.
+
+To force strict Background Suppression for tiny objects:
+```bash
+python train.py --dataset rrsis_d --ot_alpha 0.5 --ot_beta 1.0 --no_learnable_margins
+```
+
+---
+
+## 📊 Evaluation
+
+Evaluate the model on the test split. The evaluation script automatically applies Test-Time Augmentation (TTA) using horizontal and vertical flips.
+
+```bash
+python test.py \
+    --dataset rrsis_d \
+    --data_root ./data \
+    --split test \
+    --resume ./output/rrsis_d_enhanced/best_model.pth \
+    --visualize
+```
+
+**Output Metrics:**
 - **mIoU**: Mean Intersection over Union
-- **oIoU**: Overall IoU
-- **P@0.5 - P@0.9**: Precision at IoU thresholds
+- **oIoU**: Overall Intersection over Union
+- **P@0.5 - P@0.9**: Precision at IoU thresholds. Our Mask Refinement + Lovász Loss specifically boosts P@0.8 and P@0.9.
+- Visualizations will be saved in `output_dir/visualizations/`.
 
-## Project Structure
-```
-Enhanced_RRSIS_UOT/
-├── sam3/                           # SAM3 core (Meta's implementation)
-├── lib/
-│   ├── enhanced_model.py           # ★ Enhanced model (main entry point)
-│   ├── dynamic_lora.py             # ★ Text-Guided Dynamic LoRA
-│   ├── contrastive_loss.py         # ★ InfoNCE Contrastive Loss
-│   ├── multiscale_ot_alignment.py  # ★ Multi-Scale OT Alignment
-│   ├── ohem_loss.py                # ★ OHEM + Focal + Boundary Loss
-│   ├── rrsis_sam3_model.py         # Base model (from RRSIS_SAM3)
-│   ├── rs_adapters.py              # Static LoRA adapters (fallback)
-│   ├── ot_feature_alignment.py     # Single-scale OT (fallback)
-│   └── ot_loss.py                  # Standard Dice+BCE (fallback)
-├── data/                           # Dataset loaders
-├── refer/                          # REFER API
-├── loss/                           # Legacy loss functions
-├── configs/
-│   └── enhanced_rrsis_uot.yaml     # Full configuration
-├── train.py                        # Training script
-├── test.py                         # Evaluation script
-├── args.py                         # CLI arguments
-├── fine.sh                         # Training launcher
-└── test.sh                         # Evaluation launcher
-```
+---
 
-## Citation
-```bibtex
-@article{enhanced_rrsis_uot_2026,
-    title={Enhanced RRSIS-UOT: Enhanced Referring Remote Sensing Image Segmentation
-           with Unbalanced Optimal Transport},
-    year={2026}
-}
-```
+## 🧠 Architecture Flow
+
+1. **Input:** Image (504×504) + Text Caption
+2. **Backbone:** SAM3 ViT + Text Encoder (Frozen)
+3. **Adaptation:** Text-Guided Dynamic LoRA
+4. **Alignment:** Multi-Scale Unbalanced OT (across 3 FPN levels)
+5. **Fusion:** SAM3 Transformer Encoder
+6. **Detection:** SAM3 DETR Decoder
+7. **Refinement:** Mask Refinement Head (RDConv + FPN skip connections)
+8. **Losses:** EnhancedOHEM (Boundary + Lovász + Focal) + Contrastive Loss
+
+---
+*Developed for Advanced Referring Remote Sensing Image Segmentation (2026).*

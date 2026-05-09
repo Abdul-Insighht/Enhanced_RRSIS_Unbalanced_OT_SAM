@@ -9,14 +9,14 @@ freeze_backbone: true    # Freeze ViT backbone (train only LoRA)
 freeze_text_encoder: true # Freeze text encoder
 
 # ====== Training ======
-epochs: 40
+epochs: 50               # Extended for resume fine-tuning (from epoch 22)
 batch_size: 2            # Per GPU (Kaggle 16GB compatible)
-grad_accum_steps: 4      # Effective batch = 2 * 4 = 8
-lr: 5e-5                 # Base learning rate
-lr_backbone: 1e-5        # LoRA adapter learning rate
-lr_decoder: 5e-5         # Decoder/seg head learning rate
+grad_accum_steps: 8      # Effective batch = 2 * 8 = 16 (smoother gradients)
+lr: 1e-5                 # Reduced for fine-tuning (was 5e-5)
+lr_backbone: 5e-6        # Reduced LoRA adapter LR (was 1e-5)
+lr_decoder: 2e-5         # Reduced decoder LR (was 5e-5)
 weight_decay: 0.01
-warmup_epochs: 5
+warmup_epochs: 2         # Short warmup for resume (was 5)
 max_tokens: 32           # SAM3 text tokenizer max length
 
 # ====== Loss ======
@@ -30,6 +30,7 @@ gradient_checkpointing: true
 seed: 42
 
 # ====== Dataset Specific Notes ======
-# RRSIS-D:   12181 train → ~1523 steps/epoch (bs=8) → 60,920 total steps
-# RRSIS-HR:  2118 train  → ~265 steps/epoch (bs=8)  → 10,600 total steps
-# RefSegRS:  2172 train  → ~272 steps/epoch (bs=8)  → 10,880 total steps
+# Effective batch size: 2 * 8 = 16
+# RRSIS-D:   12181 train → ~762 steps/epoch (bs=16) → 38,100 total steps (50 ep)
+# RRSIS-HR:  2118 train  → ~133 steps/epoch (bs=16) → 6,650 total steps (50 ep)
+# RefSegRS:  2172 train  → ~136 steps/epoch (bs=16) → 6,800 total steps (50 ep)

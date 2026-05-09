@@ -116,22 +116,22 @@ def get_parser():
                         help='Disable TTA')
 
     # ====== Training ======
-    parser.add_argument('--epochs', type=int, default=40,
+    parser.add_argument('--epochs', type=int, default=50,
                         help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=2,
                         help='Training batch size per GPU')
-    parser.add_argument('--lr', type=float, default=5e-5,
-                        help='Base learning rate')
-    parser.add_argument('--lr_backbone', type=float, default=1e-5,
-                        help='Learning rate for backbone (LoRA params)')
-    parser.add_argument('--lr_decoder', type=float, default=5e-5,
-                        help='Learning rate for decoder/seg head')
+    parser.add_argument('--lr', type=float, default=1e-5,
+                        help='Base learning rate (reduced for fine-tuning)')
+    parser.add_argument('--lr_backbone', type=float, default=5e-6,
+                        help='Learning rate for backbone (LoRA params, reduced for fine-tuning)')
+    parser.add_argument('--lr_decoder', type=float, default=2e-5,
+                        help='Learning rate for decoder/seg head (reduced for fine-tuning)')
     parser.add_argument('--weight_decay', type=float, default=1e-2,
                         help='Weight decay')
-    parser.add_argument('--warmup_epochs', type=int, default=5,
-                        help='Number of warmup epochs')
-    parser.add_argument('--grad_accum_steps', type=int, default=4,
-                        help='Gradient accumulation steps (effective batch = batch_size * accum)')
+    parser.add_argument('--warmup_epochs', type=int, default=2,
+                        help='Number of warmup epochs (reduced for resume fine-tuning)')
+    parser.add_argument('--grad_accum_steps', type=int, default=8,
+                        help='Gradient accumulation steps (effective batch = batch_size * accum = 16)')
 
     # ====== Loss ======
     parser.add_argument('--dice_weight', type=float, default=0.5,

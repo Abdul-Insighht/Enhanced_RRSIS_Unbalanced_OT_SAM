@@ -397,6 +397,35 @@ def main():
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         start_epoch = ckpt.get('epoch', 0)
         best_iou = ckpt.get('best_iou', 0.0)
+
+        # Restore scheduler state if available
+        if 'scheduler_state_dict' in ckpt:
+            scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+            print(f"  Scheduler state restored.")
+        else:
+            # Fast-forward scheduler to the correct step
+            for _ in range(start_epoch * steps_per_epoch):
+                scheduler.step()
+            print(f"  Scheduler fast-forwarded to step {start_epoch * steps_per_epoch}.")
+
+        # Restore scaler state if available
+        if 'scaler_state_dict' in ckpt:
+            scaler.load_state_dict(ckpt['scaler_state_dict'])
+            print(f"  GradScaler state restored.")
+
+        # Override optimizer LR with new args (for fine-tuning with lower LR)
+        lr_map = {
+            'lora_adapters': args.lr_backbone,
+            'enhancements': args.lr_decoder,
+            'decoder': args.lr_decoder,
+            'other': args.lr,
+        }
+        for pg in optimizer.param_groups:
+            pg_name = pg.get('name', 'other')
+            new_lr = lr_map.get(pg_name, args.lr)
+            print(f"  Override LR for '{pg_name}': {pg['lr']:.2e} → {new_lr:.2e}")
+            pg['lr'] = new_lr
+
         print(f"  Resumed at epoch {start_epoch}, best_iou={best_iou:.4f}")
 
     # ====== Output Directory ======
@@ -464,10 +493,14 @@ def main():
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'scaler_state_dict': scaler.state_dict(),
                 'best_iou': best_iou,
+                'val_iou': val_iou,
+                'val_overall_iou': val_overall_iou,
                 'args': vars(args),
             }, save_path)
-            print(f"  ★ New best model saved!")
+            print(f"  ★ New best model saved! mIoU={val_iou:.2f}, oIoU={val_overall_iou:.2f}")
 
         # Save latest model at every epoch
         latest_save_path = os.path.join(args.output_dir, 'latest_model.pth')
@@ -475,19 +508,27 @@ def main():
             'epoch': epoch + 1,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'scaler_state_dict': scaler.state_dict(),
             'best_iou': best_iou,
+            'val_iou': val_iou,
+            'val_overall_iou': val_overall_iou,
             'args': vars(args),
         }, latest_save_path)
         print(f"  Latest model weights updated for epoch {epoch+1}.")
 
-        # Save checkpoint every 10 epochs
-        if (epoch + 1) % 10 == 0:
+        # Save checkpoint every 5 epochs (more frequent for monitoring)
+        if (epoch + 1) % 5 == 0:
             save_path = os.path.join(args.output_dir, f'checkpoint_epoch{epoch+1}.pth')
             torch.save({
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'scaler_state_dict': scaler.state_dict(),
                 'best_iou': best_iou,
+                'val_iou': val_iou,
+                'val_overall_iou': val_overall_iou,
                 'args': vars(args),
             }, save_path)
             print(f"  Checkpoint saved: {save_path}")

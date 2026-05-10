@@ -66,7 +66,7 @@ def get_parser():
                         help='UOT image marginal relaxation (lower = more bg suppression)')
     parser.add_argument('--ot_beta', type=float, default=1.0,
                         help='UOT text marginal relaxation (lower = more text filtering)')
-    parser.add_argument('--learnable_margins', action='store_true', default=True,
+    parser.add_argument('--learnable_margins', action='store_true', default=False,
                         help='Make UOT alpha/beta trainable after warmup')
     parser.add_argument('--no_learnable_margins', action='store_true', default=False,
                         help='Keep UOT alpha/beta fixed throughout training')
@@ -82,13 +82,13 @@ def get_parser():
                         help='Focal loss gamma (higher = more focus on hard)')
 
     # ====== Mask Refinement (NEW) ======
-    parser.add_argument('--use_mask_refinement', action='store_true', default=True,
+    parser.add_argument('--use_mask_refinement', action='store_true', default=False,
                         help='Enable mask refinement head for sharper boundaries')
     parser.add_argument('--no_mask_refinement', action='store_true', default=False,
                         help='Disable mask refinement head')
 
     # ====== Orientation-Aware Conv / RDConv (NEW) ======
-    parser.add_argument('--use_rdconv', action='store_true', default=True,
+    parser.add_argument('--use_rdconv', action='store_true', default=False,
                         help='Enable rotated depthwise conv in mask refinement')
     parser.add_argument('--no_rdconv', action='store_true', default=False,
                         help='Disable RDConv (use standard conv)')
@@ -96,7 +96,7 @@ def get_parser():
                         help='Number of RDConv orientation branches')
 
     # ====== Lovász Loss (NEW) ======
-    parser.add_argument('--use_lovasz_loss', action='store_true', default=True,
+    parser.add_argument('--use_lovasz_loss', action='store_true', default=False,
                         help='Enable Lovász hinge loss for direct IoU optimization')
     parser.add_argument('--no_lovasz_loss', action='store_true', default=False,
                         help='Disable Lovász loss')

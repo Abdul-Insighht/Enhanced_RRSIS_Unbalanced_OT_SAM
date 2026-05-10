@@ -420,11 +420,16 @@ def main():
             'decoder': args.lr_decoder,
             'other': args.lr,
         }
-        for pg in optimizer.param_groups:
+        for i, pg in enumerate(optimizer.param_groups):
             pg_name = pg.get('name', 'other')
             new_lr = lr_map.get(pg_name, args.lr)
             print(f"  Override LR for '{pg_name}': {pg['lr']:.2e} → {new_lr:.2e}")
             pg['lr'] = new_lr
+            pg['initial_lr'] = new_lr  # Important: Update initial_lr for scheduler
+            
+            # Also update the scheduler's base_lrs if it exists
+            if hasattr(scheduler, 'base_lrs') and i < len(scheduler.base_lrs):
+                scheduler.base_lrs[i] = new_lr
 
         print(f"  Resumed at epoch {start_epoch}, best_iou={best_iou:.4f}")
 

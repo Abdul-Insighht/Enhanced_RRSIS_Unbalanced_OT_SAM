@@ -317,14 +317,18 @@ class MultiScaleOTAligner(nn.Module):
 
         # Compute scale weights
         if self.text_conditioned and hasattr(self, 'scale_selector'):
-            # Pool text features: (seq, B, C) → (B, C)
+            B = fpn_features[0].tensors.shape[0] if hasattr(fpn_features[0], 'tensors') else fpn_features[0].shape[0]
+            # Pool text features → (B, C)
             if text_feat.dim() == 3:
-                if text_feat.shape[1] != fpn_features[0].shape[0]:
-                    # (seq, B, C) format
-                    text_pooled = text_feat.mean(dim=0)
+                if text_feat.shape[1] == B and text_feat.shape[0] != B:
+                    # (seq, B, C) format — pool over sequence dim
+                    text_pooled = text_feat.mean(dim=0)   # (B, C)
+                elif text_feat.shape[0] == B:
+                    # (B, seq, C) format — pool over sequence dim
+                    text_pooled = text_feat.mean(dim=1)   # (B, C)
                 else:
-                    # (B, seq, C) format
-                    text_pooled = text_feat.mean(dim=1)
+                    # Ambiguous — assume (seq, B, C) and permute
+                    text_pooled = text_feat.permute(1, 0, 2).mean(dim=1)  # (B, C)
             else:
                 text_pooled = text_feat
             # Per-sample scale weights

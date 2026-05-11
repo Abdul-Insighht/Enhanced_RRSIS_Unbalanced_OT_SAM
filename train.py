@@ -250,6 +250,7 @@ def train_one_epoch(model, train_loader, optimizer, scheduler, scaler, device, e
     model.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+    metric_logger.add_meter('weight_decay', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     metric_logger.add_meter('loss', utils.SmoothedValue(window_size=20, fmt='{value:.4f}'))
     metric_logger.add_meter('iou', utils.SmoothedValue(window_size=20, fmt='{value:.4f}'))
     header = 'Epoch: [{}]'.format(epoch)
@@ -286,6 +287,7 @@ def train_one_epoch(model, train_loader, optimizer, scheduler, scaler, device, e
             'loss': outputs['loss'].item(),
             'iou': iou,
             'lr': optimizer.param_groups[0]["lr"],
+            'weight_decay': optimizer.param_groups[0].get("weight_decay", 0.0),
         }
         if 'seg_loss' in outputs:
             log_dict['seg_loss'] = outputs['seg_loss'].item() if isinstance(outputs['seg_loss'], torch.Tensor) else outputs['seg_loss']
@@ -310,6 +312,8 @@ def main():
     print(f"  LoRA Rank: {args.lora_rank}")
     print(f"  Epochs: {args.epochs}")
     print(f"  Batch Size: {args.batch_size} × {args.grad_accum_steps} accum")
+    print(f"  Learning Rate: {args.lr} (Backbone: {args.lr_backbone}, Decoder: {args.lr_decoder})")
+    print(f"  Weight Decay: {args.weight_decay}")
     print(f"  Device: {device}")
     print(f"  --- Enhancements ---")
     print(f"  Dynamic LoRA: {args.use_dynamic_lora}")
@@ -426,6 +430,8 @@ def main():
             print(f"  Override LR for '{pg_name}': {pg['lr']:.2e} → {new_lr:.2e}")
             pg['lr'] = new_lr
             pg['initial_lr'] = new_lr  # Important: Update initial_lr for scheduler
+            pg['weight_decay'] = args.weight_decay
+
             
             # Also update the scheduler's base_lrs if it exists
             if hasattr(scheduler, 'base_lrs') and i < len(scheduler.base_lrs):
